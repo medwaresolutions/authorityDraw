@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Drawing</title>
+    <style>
+        /* General styles */
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        /* Header styles */
+        #header {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            height: 80px;
+            background-color: lightgray;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+        /* Button styles */
+        .button {
+            background-color: #6CB0D3;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 0 20px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background-color 0.3s ease;
+        }
+        .button:hover {
+            background-color: #6CB0A9;
+        }
+        /* PDF container styles */
+        #pdf-container {
+            position: relative;
+            width: 1190px;
+            height: calc(100vh - 80px);
+            overflow: auto;
+            margin-top: 80px;
+        }
+        /* Canvas styles */
+        #pdf-canvas, #drawing-canvas {
+            border: 0;
+            width: 100%;
+            height: auto;
+        }
+        #drawing-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        /* Loader styles */
+        #loader {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        /* Navigation styles */
+        #navigation {
+            display: flex;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        /* Holding page styles */
+        #holding-page {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: calc(100vh - 80px);
+            margin-top: 180px;
+            background-color: white;
+        }
+
+        .holding-content {
+            text-align: center;
+        }
+
+        .holding-content img {
+            max-width: 100%;
+            height: auto;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <button id="styled-button" class="button">Upload Form</button>
+        <div id="navigation">
+            <button id="prev-button" class="button">Previous</button>
+            <span id="page-info"></span>
+            <button id="next-button" class="button">Next</button>
+        </div>
+        <button class="button" onclick="saveAsPDF()">Save Form</button>
+    </div>
+    <div id="holding-page">
+        <div class="holding-content">
+            <h2>Upload your PDF.</h2> <br><p>Draw anywhere on the image then save to your device.</p>
+            <img src="images/pb1121.png" alt="Placeholder Image">
+        </div>
+    </div>
+    <input type="file" id="file-input" accept="application/pdf">
+    <div id="pdf-container">
+        <canvas id="pdf-canvas"></canvas>
+        <canvas id="drawing-canvas"></canvas>
+        <div id="loader">Loading PDF...</div>
+    </div>
+    
+    <!-- PDF.js and jsPDF libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.3.1/jspdf.umd.min.js"></script>
+    <script>
+        // Updated loadPDF function
+        function loadPDF(url) {
+            fetch(url)
+                .then(response => response.arrayBuffer())
+                .then(data => {
+                    const typedArray = new Uint8Array(data);
+                    pdfjsLib.getDocument(typedArray).promise.then(doc => {
+                        pdfDoc = doc;
+                        totalPages = doc.numPages;
+                        currentPage = 1;
+                        renderPage(currentPage);
+                    }).catch(error => {
+                        console.error("Error loading PDF: ", error);
+                    });
+                })
+                .catch(error => {
+                    console.error("Error fetching PDF: ", error);
+                });
+        }
+
+        // Event listener to load PDF based on URL parameters
+        document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const submissionID = urlParams.get('submissionID');
+            const apiKey = urlParams.get('apiKey');
+            const pdfConverterId = '222415089588869'; // Assuming this is a fixed part of the URL
+
+            if (submissionID && apiKey) {
+                const pdfUrl = `https://api.jotform.com/pdf-converter/${pdfConverterId}/fill-pdf?download=1&submissionID=${submissionID}&apiKey=${apiKey}`;
+                loadPDF(pdfUrl);
+            } else {
+                console.error('Required parameters not found in URL');
+            }
+        });
+
+        // Existing functions and event listeners for rendering, annotating, and saving PDF
+        function getMousePos(canvas, evt) {
+            var rect = canvas.getBoundingClientRect();
+            return {
+                x: evt.clientX - rect.left,
+                y: evt.clientY - rect.top
+            };
+        }
+
+        let pdfCanvas = document.getElementById('pdf-canvas');
+        let drawingCanvas = document.getElementById('drawing-canvas');
+        let pdfContext = pdfCanvas.getContext('2d');
+        let drawingContext = drawingCanvas.getContext('2d');
+
+        let pdfDoc = null;
+        let currentPage = 1;
+        let totalPages = 0;
+        let drawing = false;
+        const lineWidth = 5;
+
+        document.getElementById('file-input').addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                localStorage.clear();  // Clear annotations
+                loadPDF(file);
+
+                // Hide the holding page
+                document.getElementById('holding-page').style.display = 'none';
+            }
+        });
+
+        document.getElementById('styled-button').addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
+
+        document.getElementById('prev-button').addEventListener('click', () => {
+            if (currentPage > 1) {
+                saveCurrentPageAnnotations().then(() => {
+                    currentPage--;
+                    renderPage(currentPage);
+                });
+            }
+        });
+
+        document.getElementById('next-button').addEventListener('click', () => {
+            if (currentPage < totalPages) {
+                saveCurrentPageAnnotations().then(() => {
+                    currentPage++;
+                    renderPage(currentPage);
+                });
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            if (pdfDoc) {
+                renderPage(currentPage);
+            }
+        });
+
+        drawingCanvas.addEventListener('mousedown', (e) => {
+            if (loader.style.display === 'none') {
+                drawing = true;
+                drawingContext.lineWidth = lineWidth;
+                drawingContext.beginPath();
+                let rect = drawingCanvas.getBoundingClientRect(); // get the bounding rectangle of the canvas
+                let x = e.clientX - rect.left; // adjust the x-coordinate of the mouse event
+                let y = e.clientY - rect.top; // adjust the y-coordinate of the mouse event
+                drawingContext.moveTo(x, y); // move the path to the adjusted coordinates
+            }
+        });
+
+        drawingCanvas.addEventListener('mousemove', (e) => {
+            if (drawing) {
+                var pos = getMousePos(drawingCanvas, e);
+                drawingContext.lineTo(pos.x, pos.y);
+                drawingContext.stroke();
+            }
+        });
+
+        drawingCanvas.addEventListener('mouseup', () => {
+            drawing = false;
+            saveCurrentPageAnnotations();  // Save annotations after finishing drawing
+        });
+
+        function loadPDF(file) {
+            const fileReader = new FileReader();
+            fileReader.onload = function () {
+                const typedArray = new Uint8Array(this.result);
+                pdfjsLib.getDocument(typedArray).promise.then(doc => {
+                    pdfDoc = doc;
+                    totalPages = doc.numPages;
+                    currentPage = 1;
+                    renderPage(currentPage);
+                }).catch(error => {
+                    console.error("Error loading PDF: ", error);
+                });
+            };
+            fileReader.readAsArrayBuffer(file);
+        }
+
+        function saveCurrentPageAnnotations() {
+            return new Promise((resolve) => {
+                drawingCanvas.toBlob((blob) => {
+                    const reader = new FileReader();
+                    reader.onload = function (event) {
+                        localStorage.setItem(`page_${currentPage}_annotations`, event.target.result);
+                        resolve();
+                    };
+                    reader.readAsDataURL(blob);
+                }, 'image/png');  // Use PNG for better quality
+            });
+        }
+
+        function renderPage(pageNumber) {
+            loader.style.display = 'block';
+            pdfDoc.getPage(pageNumber).then(page => {
+                const viewport = page.getViewport({ scale: 2 });  // Render at higher scale for better quality
+                const canvasWidth = viewport.width;
+                const canvasHeight = viewport.height;
+
+                pdfCanvas.width = canvasWidth;
+                pdfCanvas.height = canvasHeight;
+                drawingCanvas.width = canvasWidth;
+                drawingCanvas.height = canvasHeight;
+
+                const renderContext = {
+                    canvasContext: pdfContext,
+                    viewport: viewport
+                };
+
+                page.render(renderContext).promise.then(() => {
+                    loader.style.display = 'none';
+                    document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages}`;
+
+                    const savedAnnotations = localStorage.getItem(`page_${currentPage}_annotations`);
+                    if (savedAnnotations) {
+                        const img = new Image();
+                        img.onload = () => {
+                            drawingContext.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+                            drawingContext.drawImage(img, 0, 0);
+                        };
+                        img.src = savedAnnotations;
+                    } else {
+                        drawingContext.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+                    }
+                }).catch(error => {
+                    console.error("Error rendering page: ", error);
+                });
+            }).catch(error => {
+                console.error("Error getting page: ", error);
+            });
+        }
+
+        function saveAsPDF() {
+            const pdf = new jspdf.jsPDF();
+
+            function addPageToPDF(pageNumber) {
+                return new Promise((resolve) => {
+                    pdfDoc.getPage(pageNumber).then(page => {
+                        const viewport = page.getViewport({ scale: 2 });  // Higher scale for better quality
+                        const canvasWidth = viewport.width;
+                        const canvasHeight = viewport.height;
+
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = canvasWidth;
+                        tempCanvas.height = canvasHeight;
+                        const tempContext = tempCanvas.getContext('2d');
+
+                        const renderContext = {
+                            canvasContext: tempContext,
+                            viewport: viewport
+                        };
+
+                        page.render(renderContext).promise.then(() => {
+                            const savedAnnotations = localStorage.getItem(`page_${pageNumber}_annotations`);
+                            if (savedAnnotations) {
+                                const img = new Image();
+                                img.onload = () => {
+                                    tempContext.drawImage(img, 0, 0, canvasWidth, canvasHeight);
+                                    tempCanvas.toBlob((blob) => {
+                                        const url = URL.createObjectURL(blob);
+                                        pdf.addImage(url, 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight(), undefined, 'FAST');
+                                        if (pageNumber < totalPages) {
+                                            pdf.addPage();
+                                        }
+                                        resolve();
+                                    }, 'image/png', 1.0);  // Use PNG for better quality
+                                };
+                                img.src = savedAnnotations;
+                            } else {
+                                tempCanvas.toBlob((blob) => {
+                                    const url = URL.createObjectURL(blob);
+                                    pdf.addImage(url, 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight(), undefined, 'FAST');
+                                    if (pageNumber < totalPages) {
+                                        pdf.addPage();
+                                    }
+                                    resolve();
+                                }, 'image/png', 1.0);  // Use PNG for better quality
+                            }
+                        });
+                    });
+                });
+            }
+
+            let pagePromises = [];
+            for (let i = 1; i <= totalPages; i++) {
+                pagePromises.push(addPageToPDF(i));
+            }
+
+            Promise.all(pagePromises).then(() => {
+                pdf.save('annotated.pdf');
+            }).catch(error => {
+                console.error("Error saving PDF: ", error);
+            });
+        }
+    </script>
+</body>
+</html>
